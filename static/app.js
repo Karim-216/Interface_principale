@@ -9,16 +9,21 @@ const DATA_SOURCE_TYPES = window.DATA_SOURCE_TYPES || [];
 
 // Champs de la section Identité qui ont chacun leur propre repère de source
 // (voir srcMini / fieldSourceSet) — réutilisé par le bouton "source par
-// défaut pour cette section".
+// défaut pour cette section". Jour/mois/année de naissance partagent un
+// seul et même repère ('birthDate'), plutôt que trois séparés.
 const IDENTITY_SOURCE_FIELDS = [
   'commonName','usualFirstname','otherFirstname','marriedName','birthName','genre',
-  'birthDay','birthMonth','birthYear','birthPlace','birthCountry','profession','hobby','remarks',
+  'birthDate','birthPlace','birthCountry','profession','hobby','remarks',
 ];
 
-// Onglets du formulaire, dans l'ordre d'affichage.
+// Onglets du formulaire, dans l'ordre d'affichage. Sources en premier : les
+// autres sections y font référence (on y choisit le fichier source plutôt
+// que de retaper un nom de source). Institutions avant Parcours/Formation,
+// pour la même raison (on les y choisit dans une liste déroulante).
 const FORM_TABS = [
-  { key:'identity',      label:'Identité' },
   { key:'sources',       label:'Sources du CV' },
+  { key:'identity',      label:'Identité' },
+  { key:'institutions',  label:'Institutions' },
   { key:'trajectories',  label:'Parcours professionnel' },
   { key:'educations',    label:'Formation' },
   { key:'distinctions',  label:'Distinctions' },
@@ -26,14 +31,14 @@ const FORM_TABS = [
 ];
 
 const state = {
-  screen: 'login',       // login | dashboard | form | history
+  screen: 'login',       // login | dashboard | institutions | institutionForm | sources | form | history
   user: '',
   list: [],
   search: '',
   referentials: null,
   editingPK: null,
   form: null,
-  formTab: 'identity',
+  formTab: 'sources',
   duplicates: [],
   statusMsg: null,
   confirmDeletePK: null,
@@ -41,6 +46,25 @@ const state = {
   historyFilterPK: null,
   loading: false,
   autoSaveStatus: '',    // texte affiché près du bouton Enregistrer
+
+  // Page Institutions (recherche globale, accessible depuis la barre de nav)
+  institutionsList: [],
+  institutionsSearch: '',
+  editingInstitutionPK: null,
+  institutionForm: null,
+  institutionStatusMsg: null,
+
+  // Onglet Institutions DANS le formulaire d'une fiche (gérer/créer les
+  // institutions sans quitter la saisie en cours)
+  formInstSearch: '',
+  formInstList: [],
+  formInstEditPK: null,     // null = rien en édition | 'new' | un INS_PK
+  formInstEditData: null,
+  formInstStatusMsg: null,
+
+  // Page Sources
+  sourcesList: [],
+  sourcesSearch: '',
 };
 
 /* ---------- Appels API ---------- */
@@ -78,10 +102,19 @@ function showToast(text){
    ROUTEUR
    ============================================================ */
 
+const NAV_PAGES = [
+  { key:'dashboard',    label:'Individus' },
+  { key:'institutions', label:'Institutions' },
+  { key:'sources',      label:'Sources' },
+];
+
 function render(){
   const app = document.getElementById('app');
   if(state.screen==='login') app.innerHTML = viewLogin();
-  else if(state.screen==='dashboard') app.innerHTML = viewTopbar() + viewDashboard();
+  else if(state.screen==='dashboard') app.innerHTML = viewTopbar() + viewNavBar() + viewDashboard();
+  else if(state.screen==='institutions') app.innerHTML = viewTopbar() + viewNavBar() + viewInstitutions();
+  else if(state.screen==='institutionForm') app.innerHTML = viewTopbar() + viewInstitutionForm();
+  else if(state.screen==='sources') app.innerHTML = viewTopbar() + viewNavBar() + viewSourcesPage();
   else if(state.screen==='form') app.innerHTML = viewTopbar() + viewForm();
   else if(state.screen==='history') app.innerHTML = viewTopbar() + viewHistory();
 }
@@ -95,6 +128,21 @@ function viewTopbar(){
       <button class="ghost" onclick="logout()">Se déconnecter</button>
     </div>
   </div>`;
+}
+
+function viewNavBar(){
+  return `
+  <div class="nav-bar">
+    ${NAV_PAGES.map(p => `<button class="nav-btn ${state.screen===p.key?'active':''}" onclick="goToPage('${p.key}')">${esc(p.label)}</button>`).join('')}
+  </div>`;
+}
+
+async function goToPage(key){
+  state.screen = key;
+  render();
+  if(key === 'dashboard') await loadDashboard();
+  else if(key === 'institutions') await loadInstitutions();
+  else if(key === 'sources') await loadSourcesPage();
 }
 
 /* ---------- Écran 1 : connexion ---------- */
@@ -285,6 +333,367 @@ function renderHistoryList(){
 }
 
 /* ============================================================
+   PAGE INSTITUTIONS
+   ============================================================ */
+
+async function loadInstitutions(){
+  try{
+    const qs = state.institutionsSearch ? ('?q=' + encodeURIComponent(state.institutionsSearch)) : '';
+    state.institutionsList = await api('institutions' + qs);
+  }catch(e){
+    state.institutionsList = [];
+    showToast("Impossible de charger les institutions : " + e.message);
+  }
+  renderInstitutionsListInPlace();
+}
+
+function viewInstitutions(){
+  return `
+  <div class="dash-head">
+    <h2 id="inst-count">…</h2>
+    <button class="primary" onclick="openNewInstitutionForm()">+ Nouvelle institution</button>
+  </div>
+  <div class="search-row">
+    <input type="text" placeholder="Rechercher une institution…" value="${esc(state.institutionsSearch)}"
+      oninput="state.institutionsSearch=this.value; loadInstitutionsDebounced();">
+  </div>
+  <div id="inst-list">Chargement…</div>
+  `;
+}
+
+let institutionsSearchTimer = null;
+function loadInstitutionsDebounced(){
+  clearTimeout(institutionsSearchTimer);
+  institutionsSearchTimer = setTimeout(loadInstitutions, 250);
+}
+
+function renderInstitutionsListInPlace(){
+  const countEl = document.getElementById('inst-count');
+  if(countEl) countEl.textContent = `${state.institutionsList.length} institution${state.institutionsList.length>1?'s':''}`;
+  const el = document.getElementById('inst-list');
+  if(!el) return;
+  if(state.institutionsList.length===0){
+    el.innerHTML = `<div class="empty-state panel">Aucune institution trouvée.</div>`;
+    return;
+  }
+  el.innerHTML = state.institutionsList.map(i => `
+    <div class="ind-row">
+      <div class="ind-main">
+        <div>
+          <div class="ind-name">${esc(i.name)}</div>
+          <div class="ind-meta">${esc(i.typeName||'')}${i.city ? ' — ' + esc(i.city) : ''}${i.country ? ' (' + esc(i.country) + ')' : ''}</div>
+        </div>
+      </div>
+      <div class="ind-actions">
+        <button class="small" onclick="openEditInstitutionForm(${i.pk})">Modifier</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function blankInstitutionForm(){
+  return { pk:null, name:'', type:'Entreprise', city:'', country:'', street:'', streetNumber:'', remarks:'' };
+}
+
+function openNewInstitutionForm(){
+  state.editingInstitutionPK = null;
+  state.institutionForm = blankInstitutionForm();
+  state.institutionStatusMsg = null;
+  state.screen = 'institutionForm';
+  render();
+  ensureReferentials().then(rerenderInstitutionForm);
+}
+
+async function openEditInstitutionForm(pk){
+  state.editingInstitutionPK = pk;
+  state.institutionStatusMsg = null;
+  state.screen = 'institutionForm';
+  render();
+  try{
+    const [f] = await Promise.all([ api('institution/' + pk), ensureReferentials() ]);
+    state.institutionForm = f;
+  }catch(e){
+    showToast("Impossible de charger l'institution : " + e.message);
+    state.screen = 'institutions';
+    render();
+    return;
+  }
+  render();
+}
+
+function rerenderInstitutionForm(){
+  if(state.screen === 'institutionForm') document.getElementById('app').innerHTML = viewTopbar() + viewInstitutionForm();
+}
+
+function viewInstitutionForm(){
+  const f = state.institutionForm;
+  if(!f) return `<div class="panel">Chargement…</div>`;
+  const isEdit = state.editingInstitutionPK !== null;
+  return `
+  <div class="dash-head">
+    <h2>${isEdit ? "Modifier l'institution" : 'Nouvelle institution'}</h2>
+    <button class="ghost" onclick="backToInstitutions()">← Retour à la liste</button>
+  </div>
+  ${state.institutionStatusMsg ? `<div class="status-msg status-error">${esc(state.institutionStatusMsg)}</div>` : ''}
+  <div class="panel section">
+    <div class="grid grid-2">
+      <div class="field"><label>Nom *</label><input type="text" required value="${esc(f.name)}" oninput="instFormSet('name',this.value)"></div>
+      <div class="field"><label>Type</label><input type="text" list="dl-institutiontypes" value="${esc(f.type)}" oninput="instFormSet('type',this.value)"></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:14px">
+      <div class="field"><label>Ville</label><input type="text" list="dl-municipalities" value="${esc(f.city)}" oninput="instFormSet('city',this.value)"></div>
+      <div class="field"><label>Pays</label><input type="text" list="dl-birthcountries" value="${esc(f.country)}" oninput="instFormSet('country',this.value)"></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:14px">
+      <div class="field"><label>Rue</label><input type="text" value="${esc(f.street)}" oninput="instFormSet('street',this.value)"></div>
+      <div class="field"><label>Numéro</label><input type="text" value="${esc(f.streetNumber)}" oninput="instFormSet('streetNumber',this.value)"></div>
+    </div>
+    <div class="field" style="margin-top:14px"><label>Remarques</label><textarea oninput="instFormSet('remarks',this.value)">${esc(f.remarks)}</textarea></div>
+  </div>
+  <div class="form-footer">
+    <span></span>
+    <div>
+      <button class="ghost" onclick="backToInstitutions()">Annuler</button>
+      <button class="primary" onclick="saveInstitutionForm()">Enregistrer</button>
+    </div>
+  </div>
+  ${datalists()}
+  `;
+}
+
+function instFormSet(field, value){ state.institutionForm[field] = value; }
+
+function backToInstitutions(){
+  state.screen = 'institutions';
+  render();
+  loadInstitutions();
+}
+
+async function saveInstitutionForm(){
+  const f = state.institutionForm;
+  if(!(f.name||'').trim()){
+    state.institutionStatusMsg = "Le nom de l'institution est obligatoire.";
+    render();
+    return;
+  }
+  try{
+    await api('institution', {
+      method:'POST',
+      body: JSON.stringify({ user: state.user, pk: state.editingInstitutionPK, ...f }),
+    });
+    showToast('Institution enregistrée.');
+    backToInstitutions();
+  }catch(e){
+    state.institutionStatusMsg = e.message;
+    render();
+  }
+}
+
+/* ============================================================
+   ONGLET « Institutions » DANS le formulaire d'une fiche — gérer/créer les
+   institutions sans quitter la saisie en cours (distinct de la page globale
+   ci-dessus, qui reste accessible pour rechercher à travers toute la base).
+   ============================================================ */
+
+async function loadFormInstitutions(){
+  try{
+    const qs = state.formInstSearch ? ('?q=' + encodeURIComponent(state.formInstSearch)) : '';
+    state.formInstList = await api('institutions' + qs);
+  }catch(e){
+    state.formInstList = [];
+    showToast("Impossible de charger les institutions : " + e.message);
+  }
+  renderInstitutionsTabInPlace();
+}
+
+let formInstSearchTimer = null;
+function loadFormInstitutionsDebounced(){
+  clearTimeout(formInstSearchTimer);
+  formInstSearchTimer = setTimeout(loadFormInstitutions, 250);
+}
+
+function renderInstitutionsTabInPlace(){
+  const el = document.getElementById('form-inst-tab');
+  if(el) el.innerHTML = renderInstitutionsTab();
+}
+
+function renderInstitutionsTab(){
+  const editing = state.formInstEditPK !== null;
+  return `
+    <div class="search-row">
+      <input type="text" placeholder="Rechercher une institution…" value="${esc(state.formInstSearch)}"
+        oninput="state.formInstSearch=this.value; loadFormInstitutionsDebounced();">
+      <button onclick="openFormInstNew()">+ Nouvelle</button>
+    </div>
+    ${editing ? renderFormInstEditor() : ''}
+    <div>
+      ${state.formInstList.length===0 ? `<p class="hint">Aucune institution trouvée.</p>` : state.formInstList.map(i => `
+        <div class="ind-row">
+          <div class="ind-main">
+            <div>
+              <div class="ind-name">${esc(i.name)}</div>
+              <div class="ind-meta">${esc(i.typeName||'')}${i.city ? ' — ' + esc(i.city) : ''}${i.country ? ' (' + esc(i.country) + ')' : ''}</div>
+            </div>
+          </div>
+          <div class="ind-actions"><button class="small" onclick="openFormInstEdit(${i.pk})">Modifier</button></div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderFormInstEditor(){
+  const f = state.formInstEditData;
+  if(!f) return '';
+  return `
+  <div class="repeat-item">
+    <div class="repeat-item-head">
+      <span>${state.formInstEditPK==='new' ? 'Nouvelle institution' : "Modifier l'institution"}</span>
+      <button class="small ghost" onclick="cancelFormInstEdit()">Fermer</button>
+    </div>
+    ${state.formInstStatusMsg ? `<div class="status-msg status-error">${esc(state.formInstStatusMsg)}</div>` : ''}
+    <div class="grid grid-2">
+      <div class="field"><label>Nom *</label><input type="text" required value="${esc(f.name)}" oninput="formInstSet('name',this.value)"></div>
+      <div class="field"><label>Type</label><input type="text" list="dl-institutiontypes" value="${esc(f.type)}" oninput="formInstSet('type',this.value)"></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:10px">
+      <div class="field"><label>Ville</label><input type="text" list="dl-municipalities" value="${esc(f.city)}" oninput="formInstSet('city',this.value)"></div>
+      <div class="field"><label>Pays</label><input type="text" list="dl-birthcountries" value="${esc(f.country)}" oninput="formInstSet('country',this.value)"></div>
+    </div>
+    <div class="grid grid-2" style="margin-top:10px">
+      <div class="field"><label>Rue</label><input type="text" value="${esc(f.street)}" oninput="formInstSet('street',this.value)"></div>
+      <div class="field"><label>Numéro</label><input type="text" value="${esc(f.streetNumber)}" oninput="formInstSet('streetNumber',this.value)"></div>
+    </div>
+    <div class="field" style="margin-top:10px"><label>Remarques</label><textarea oninput="formInstSet('remarks',this.value)">${esc(f.remarks)}</textarea></div>
+    <div style="margin-top:10px"><button class="primary small" onclick="saveFormInstitution()">Enregistrer l'institution</button></div>
+  </div>`;
+}
+
+function openFormInstNew(){
+  state.formInstEditPK = 'new';
+  state.formInstEditData = blankInstitutionForm();
+  state.formInstStatusMsg = null;
+  renderInstitutionsTabInPlace();
+}
+
+async function openFormInstEdit(pk){
+  state.formInstEditPK = pk;
+  state.formInstStatusMsg = null;
+  renderInstitutionsTabInPlace();
+  try{
+    state.formInstEditData = await api('institution/' + pk);
+  }catch(e){
+    showToast("Impossible de charger l'institution : " + e.message);
+    state.formInstEditPK = null;
+  }
+  renderInstitutionsTabInPlace();
+}
+
+function cancelFormInstEdit(){
+  state.formInstEditPK = null;
+  state.formInstEditData = null;
+  state.formInstStatusMsg = null;
+  renderInstitutionsTabInPlace();
+}
+
+function formInstSet(field, value){ state.formInstEditData[field] = value; }
+
+async function saveFormInstitution(){
+  const f = state.formInstEditData;
+  if(!(f.name||'').trim()){
+    state.formInstStatusMsg = "Le nom de l'institution est obligatoire.";
+    renderInstitutionsTabInPlace();
+    return;
+  }
+  try{
+    await api('institution', {
+      method:'POST',
+      body: JSON.stringify({ user: state.user, pk: state.formInstEditPK==='new' ? null : state.formInstEditPK, ...f }),
+    });
+    showToast('Institution enregistrée.');
+    cancelFormInstEdit();
+    await loadFormInstitutions();
+    refreshInstitutionsDatalist();
+  }catch(e){
+    state.formInstStatusMsg = e.message;
+    renderInstitutionsTabInPlace();
+  }
+}
+
+// Les champs Institution (Parcours, Formation) doivent refléter tout de
+// suite une institution créée/modifiée depuis cet onglet, sans attendre un
+// changement d'onglet qui régénérerait tout le formulaire.
+async function refreshInstitutionsDatalist(){
+  const el = document.getElementById('dl-institutions');
+  if(!el) return;
+  try{
+    const names = await api('institutions');
+    el.innerHTML = names.map(i => `<option value="${esc(i.name)}">`).join('');
+  }catch(e){ /* tant pis, la liste se mettra à jour au prochain changement d'onglet */ }
+}
+
+/* ============================================================
+   PAGE SOURCES
+   ============================================================ */
+
+async function loadSourcesPage(){
+  try{
+    const qs = state.sourcesSearch ? ('?q=' + encodeURIComponent(state.sourcesSearch)) : '';
+    state.sourcesList = await api('sources' + qs);
+  }catch(e){
+    state.sourcesList = [];
+    showToast("Impossible de charger les sources : " + e.message);
+  }
+  renderSourcesPageListInPlace();
+}
+
+function viewSourcesPage(){
+  return `
+  <div class="dash-head">
+    <h2 id="src-count">…</h2>
+  </div>
+  <div class="search-row">
+    <input type="text" placeholder="Rechercher un fichier ou un nom de source…" value="${esc(state.sourcesSearch)}"
+      oninput="state.sourcesSearch=this.value; loadSourcesPageDebounced();">
+  </div>
+  <div id="src-page-list">Chargement…</div>
+  `;
+}
+
+let sourcesSearchTimer = null;
+function loadSourcesPageDebounced(){
+  clearTimeout(sourcesSearchTimer);
+  sourcesSearchTimer = setTimeout(loadSourcesPage, 250);
+}
+
+function renderSourcesPageListInPlace(){
+  const countEl = document.getElementById('src-count');
+  if(countEl) countEl.textContent = `${state.sourcesList.length} source${state.sourcesList.length>1?'s':''}`;
+  const el = document.getElementById('src-page-list');
+  if(!el) return;
+  if(state.sourcesList.length===0){
+    el.innerHTML = `<div class="empty-state panel">Aucune source trouvée.</div>`;
+    return;
+  }
+  el.innerHTML = state.sourcesList.map(s => `
+    <div class="ind-row">
+      <div class="ind-main">
+        <div>
+          <div class="ind-name mono">${esc(s.filename)}</div>
+          <div class="ind-meta">${esc(s.name||'')} — fiche de <span class="hist-name-link" onclick="openIndividualFromSource(${s.individualPK})">${esc(s.individualFirstname)} ${esc(s.individualBirthName)}</span></div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function openIndividualFromSource(pk){
+  await openEditForm(pk);
+  state.formTab = 'sources';
+  rerenderForm();
+}
+
+/* ============================================================
    FORMULAIRE — nouvelle fiche / édition
    ============================================================ */
 
@@ -303,7 +712,7 @@ function blankForm(){
 }
 function blankSource(){ return { filename:'', name:'', remarks:'' }; }
 function blankTrajectory(){
-  return { position:'', institution:'', institutionType:1, institutionCity:'', institutionCountry:'', institutionStreet:'', institutionStreetNumber:'', institutionRemarks:'',
+  return { position:'', institution:'',
            arena:'Fonction Exécutive', positionDetails:'', remarks:'', workPlace:'',
            principal:true, events:[ blankEvent() ] };
 }
@@ -311,8 +720,7 @@ function blankEvent(){
   return { day:'', month:'', year:'', nature:'1', event:'', dataSource:'' };
 }
 function blankEducation(){
-  return { school:'', schoolCity:'', schoolCountry:'', schoolStreet:'', schoolStreetNumber:'', schoolRemarks:'',
-           diploma:'', discipline:'', grade:'', startYear:'', endYear:'', initial:true, remarks:'', dataSource:'' };
+  return { school:'', diploma:'', discipline:'', grade:'', startYear:'', endYear:'', initial:true, remarks:'', dataSource:'' };
 }
 function blankDistinction(){ return { year:'', description:'', remarks:'', dataSource:'' }; }
 function blankRelative(){ return { pk:null, firstname:'', lastname:'', relationType:'', profession:'', dataSource:'' }; }
@@ -332,12 +740,13 @@ async function ensureReferentials(){
 async function openNewForm(){
   state.editingPK = null;
   state.form = blankForm();
-  state.formTab = 'identity';
+  state.formTab = 'sources';
   state.duplicates = [];
   state.statusMsg = null;
   state.autoSaveStatus = '';
-  addressModalState = null;
   nationalityModalOpen = false;
+  state.formInstSearch = ''; state.formInstList = [];
+  state.formInstEditPK = null; state.formInstEditData = null; state.formInstStatusMsg = null;
   state.screen = 'form';
   render();
   await ensureReferentials();
@@ -346,12 +755,13 @@ async function openNewForm(){
 
 async function openEditForm(pk){
   state.editingPK = pk;
-  state.formTab = 'identity';
+  state.formTab = 'sources';
   state.duplicates = [];
   state.statusMsg = null;
   state.autoSaveStatus = '';
-  addressModalState = null;
   nationalityModalOpen = false;
+  state.formInstSearch = ''; state.formInstList = [];
+  state.formInstEditPK = null; state.formInstEditData = null; state.formInstStatusMsg = null;
   state.screen = 'form';
   render();
   try{
@@ -403,13 +813,22 @@ function viewForm(){
     ${FORM_TABS.map(t => `<button class="tab-btn ${state.formTab===t.key?'active':''}" onclick="switchFormTab('${t.key}')">${esc(t.label)}</button>`).join('')}
   </div>
 
+  <div class="tab-panel" ${state.formTab!=='sources' ? 'hidden' : ''}>
+  <div class="panel section">
+    <div class="section-title"><span class="section-num">1</span><h3>Sources du CV</h3></div>
+    <p class="section-sub">Un ou plusieurs documents source (LinkedIn, Who's Who, LesBiographies…) ayant servi à cette fiche. Renseignez-les d'abord : les autres sections y feront référence par leur nom de fichier.</p>
+    <div id="sources-list">${renderSourcesList()}</div>
+    <button class="add-row-btn" onclick="addSource()">+ Ajouter une source</button>
+  </div>
+  </div>
+
   <div class="tab-panel" ${state.formTab!=='identity' ? 'hidden' : ''}>
   <div class="panel section">
     <div class="section-title">
-      <span class="section-num">1</span><h3>Identité</h3>
+      <span class="section-num">2</span><h3>Identité</h3>
       ${sectionDefaultSourceControl('identity')}
     </div>
-    <p class="section-sub">Chaque champ a son propre repère de source (ex. le nom d'usage vient de LinkedIn, le nom de naissance de LesBiographies) — à remplir quand deux sources ne disent pas la même chose.</p>
+    <p class="section-sub">Chaque champ a son propre repère de fichier source (ex. le nom d'usage vient de linkedin.pdf, le nom de naissance de lesbios.pdf) — à choisir dans la liste des fichiers déjà ajoutés dans l'onglet Sources du CV, quand deux fichiers ne disent pas la même chose.</p>
     <div class="grid grid-2">
       <div class="field">
         <div class="field-head"><label>Nom d'usage affiché *</label>${srcMini(f,'commonName')}</div>
@@ -444,10 +863,11 @@ function viewForm(){
     <div style="margin-top:14px">
       <button class="small" onclick="openNationalityModal()">🌍 Nationalité(s)${nationalitySummary()}</button>
     </div>
-    <div class="grid grid-3" style="margin-top:14px">
-      <div class="field"><div class="field-head"><label>Jour de naissance</label>${srcMini(f,'birthDay')}</div><input type="number" min="1" max="31" value="${esc(f.birthDay)}" oninput="form_.birthDay=this.value"></div>
-      <div class="field"><div class="field-head"><label>Mois de naissance</label>${srcMini(f,'birthMonth')}</div><input type="number" min="1" max="12" value="${esc(f.birthMonth)}" oninput="form_.birthMonth=this.value"></div>
-      <div class="field"><div class="field-head"><label>Année de naissance</label>${srcMini(f,'birthYear')}</div><input type="number" value="${esc(f.birthYear)}" oninput="form_.birthYear=this.value"></div>
+    <div class="field-head" style="margin-top:14px"><label>Date de naissance</label>${srcMini(f,'birthDate')}</div>
+    <div class="grid grid-3">
+      <div class="field"><label>Jour</label><input type="number" min="1" max="31" value="${esc(f.birthDay)}" oninput="form_.birthDay=this.value"></div>
+      <div class="field"><label>Mois</label><input type="number" min="1" max="12" value="${esc(f.birthMonth)}" oninput="form_.birthMonth=this.value"></div>
+      <div class="field"><label>Année</label><input type="number" value="${esc(f.birthYear)}" oninput="form_.birthYear=this.value"></div>
     </div>
     <div class="grid grid-2" style="margin-top:14px">
       <div class="field"><div class="field-head"><label>Lieu de naissance</label>${srcMini(f,'birthPlace')}</div><input type="text" list="dl-municipalities" value="${esc(f.birthPlace)}" oninput="form_.birthPlace=this.value"></div>
@@ -461,22 +881,21 @@ function viewForm(){
   </div>
   </div>
 
-  <div class="tab-panel" ${state.formTab!=='sources' ? 'hidden' : ''}>
+  <div class="tab-panel" ${state.formTab!=='institutions' ? 'hidden' : ''}>
   <div class="panel section">
-    <div class="section-title"><span class="section-num">2</span><h3>Sources du CV</h3></div>
-    <p class="section-sub">Un ou plusieurs documents source (LinkedIn, Who's Who, LesBiographies…) ayant servi à cette fiche.</p>
-    <div id="sources-list">${renderSourcesList()}</div>
-    <button class="add-row-btn" onclick="addSource()">+ Ajouter une source</button>
+    <div class="section-title"><span class="section-num">3</span><h3>Institutions</h3></div>
+    <p class="section-sub">Créez ou complétez ici les institutions (nom, type, adresse) avant de les choisir dans une liste déroulante en Parcours professionnel et Formation.</p>
+    <div id="form-inst-tab">${renderInstitutionsTab()}</div>
   </div>
   </div>
 
   <div class="tab-panel" ${state.formTab!=='trajectories' ? 'hidden' : ''}>
   <div class="panel section">
     <div class="section-title">
-      <span class="section-num">3</span><h3>Parcours professionnel</h3>
+      <span class="section-num">4</span><h3>Parcours professionnel</h3>
       ${sectionDefaultSourceControl('trajectories')}
     </div>
-    <p class="section-sub">Une entrée = un poste occupé. Cochez « poste actuel » si la personne l'occupe encore. Chaque événement (début, fin…) a sa propre source.</p>
+    <p class="section-sub">Une entrée = un poste occupé. Décochez « Fonction principale » pour un rôle secondaire (ex. administrateur, membre de comité). Chaque événement (début, fin…) a sa propre source.</p>
     <div id="traj-list">${renderTrajList()}</div>
     <button id="traj-add-btn" class="add-row-btn" onclick="addTrajectory()">+ Ajouter une étape de carrière</button>
   </div>
@@ -485,7 +904,7 @@ function viewForm(){
   <div class="tab-panel" ${state.formTab!=='educations' ? 'hidden' : ''}>
   <div class="panel section">
     <div class="section-title">
-      <span class="section-num">4</span><h3>Formation</h3>
+      <span class="section-num">5</span><h3>Formation</h3>
       ${sectionDefaultSourceControl('educations')}
     </div>
     <div id="edu-list">${renderEduList()}</div>
@@ -496,7 +915,7 @@ function viewForm(){
   <div class="tab-panel" ${state.formTab!=='distinctions' ? 'hidden' : ''}>
   <div class="panel section">
     <div class="section-title">
-      <span class="section-num">5</span><h3>Distinctions</h3>
+      <span class="section-num">6</span><h3>Distinctions</h3>
       ${sectionDefaultSourceControl('distinctions')}
     </div>
     <div id="dist-list">${renderDistList()}</div>
@@ -507,7 +926,7 @@ function viewForm(){
   <div class="tab-panel" ${state.formTab!=='relatives' ? 'hidden' : ''}>
   <div class="panel section">
     <div class="section-title">
-      <span class="section-num">6</span><h3>Parenté</h3>
+      <span class="section-num">7</span><h3>Parenté</h3>
       ${sectionDefaultSourceControl('relatives')}
     </div>
     <p class="section-sub">Parents et conjoint(s). Les enfants ne sont pas consignés dans cette base.</p>
@@ -523,7 +942,6 @@ function viewForm(){
       <button class="primary" onclick="saveCV()">${isEdit?'Enregistrer les modifications':'Enregistrer le CV'}</button>
     </div>
   </div>
-  <div id="institution-modal-root">${renderInstitutionModal()}</div>
   <div id="nationality-modal-root">${renderNationalityModal()}</div>
   `;
 }
@@ -531,6 +949,7 @@ function viewForm(){
 function switchFormTab(tab){
   state.formTab = tab;
   rerenderForm();
+  if(tab === 'institutions') loadFormInstitutions();
 }
 
 /* ---------- Bouton "source par défaut" pour une section entière ---------- */
@@ -538,7 +957,7 @@ function switchFormTab(tab){
 function sectionDefaultSourceControl(sectionKey){
   return `<div class="section-default-src">
     <input type="text" class="field-source-mini" list="dl-datasources" id="defsrc-${sectionKey}"
-      placeholder="source par défaut" title="Source par défaut pour cette section"
+      placeholder="fichier par défaut" title="Fichier source par défaut pour cette section"
       onfocus="dsFocus(this)" onblur="dsBlur(this)">
     <button class="small ghost" onclick="applyDefaultSource('${sectionKey}', document.getElementById('defsrc-${sectionKey}').value)">Appliquer à la section</button>
   </div>`;
@@ -546,7 +965,7 @@ function sectionDefaultSourceControl(sectionKey){
 
 function applyDefaultSource(sectionKey, value){
   value = (value || '').trim();
-  if(!value){ showToast("Tapez ou choisissez une source avant d'appliquer."); return; }
+  if(!value){ showToast("Tapez ou choisissez un fichier source avant d'appliquer."); return; }
   const f = state.form;
   if(sectionKey === 'identity'){
     if(!f.fieldSources) f.fieldSources = {};
@@ -585,7 +1004,7 @@ function dsBlur(el){
 
 function srcMini(f, field){
   const val = (f.fieldSources && f.fieldSources[field]) || '';
-  return `<input type="text" class="field-source-mini" list="dl-datasources" placeholder="source" title="Source de la saisie pour ce champ"
+  return `<input type="text" class="field-source-mini" list="dl-datasources" placeholder="fichier" title="Fichier source pour ce champ"
     value="${esc(val)}" onfocus="dsFocus(this)" onblur="dsBlur(this)"
     oninput="fieldSourceSet('${field}',this.value); this.dataset.touched='1';">`;
 }
@@ -610,7 +1029,7 @@ function renderNatList(){
         <div class="field"><label>Année d'obtention</label><input type="number" value="${esc(n.obtentionYear)}" oninput="natSet(${i},'obtentionYear',this.value)"></div>
         <div class="field"><label>Année de perte</label><input type="number" value="${esc(n.lossYear)}" oninput="natSet(${i},'lossYear',this.value)"></div>
       </div>
-      <div class="field" style="margin-top:10px"><label>Source de la saisie</label>
+      <div class="field" style="margin-top:10px"><label>Fichier source</label>
         <input type="text" list="dl-datasources" value="${esc(n.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)"
           oninput="natSet(${i},'dataSource',this.value); this.dataset.touched='1';">
       </div>
@@ -687,9 +1106,20 @@ function renderSourcesList(){
   `).join('');
 }
 function renderSourcesListInPlace(){ document.getElementById('sources-list').innerHTML = renderSourcesList(); }
-function sourceSet(i,field,value){ state.form.sources[i][field]=value; scheduleAutoSave(); }
-function addSource(){ state.form.sources.push(blankSource()); renderSourcesListInPlace(); scheduleAutoSave(); }
-function removeSource(i){ state.form.sources.splice(i,1); renderSourcesListInPlace(); scheduleAutoSave(); }
+function sourceSet(i,field,value){ state.form.sources[i][field]=value; if(field==='filename') refreshDataSourceDatalist(); scheduleAutoSave(); }
+function addSource(){ state.form.sources.push(blankSource()); renderSourcesListInPlace(); refreshDataSourceDatalist(); scheduleAutoSave(); }
+function removeSource(i){ state.form.sources.splice(i,1); renderSourcesListInPlace(); refreshDataSourceDatalist(); scheduleAutoSave(); }
+
+// Les autres sections proposent, dans leur champ "fichier source", les noms
+// déjà saisis dans l'onglet Sources du CV : on tient ce <datalist> à jour
+// dès qu'on ajoute/retire/renomme un fichier, sans attendre un changement
+// d'onglet (qui, lui, régénère de toute façon tout le formulaire).
+function refreshDataSourceDatalist(){
+  const el = document.getElementById('dl-datasources');
+  if(!el || !state.form) return;
+  const names = state.form.sources.map(s => s.filename).filter(Boolean);
+  el.innerHTML = names.map(v => `<option value="${esc(v)}">`).join('');
+}
 
 // Raccourci pour les inputs : on écrit directement dans state.form. Le Proxy
 // déclenche automatiquement la sauvegarde différée à chaque écriture, sans
@@ -710,6 +1140,11 @@ Object.defineProperty(window, 'form_', {
 function datalists(){
   const r = state.referentials || {};
   const opt = arr => (arr||[]).map(v => `<option value="${esc(v)}">`).join('');
+  // Les champs "fichier source" partout dans le formulaire proposent les
+  // noms de fichiers déjà saisis dans l'onglet Sources du CV de CETTE
+  // fiche — pas une liste globale : on ne référence plus un simple libellé
+  // ("LinkedIn") mais le document précis utilisé pour cette information.
+  const sourceFilenames = (state.form ? state.form.sources : []).map(s => s.filename).filter(Boolean);
   let html = `
     <datalist id="dl-positions">${opt(r.positions)}</datalist>
     <datalist id="dl-institutions">${opt(r.institutions)}</datalist>
@@ -722,72 +1157,14 @@ function datalists(){
     <datalist id="dl-disciplines">${opt(r.disciplines)}</datalist>
     <datalist id="dl-grades">${opt(r.grades)}</datalist>
     <datalist id="dl-relativetypes">${opt(r.relativeTypes)}</datalist>
+    <datalist id="dl-institutiontypes">${opt(r.institutionTypes)}</datalist>
     <datalist id="dl-events">${opt(r.events)}</datalist>
-    <datalist id="dl-datasources">${opt(r.dataSources)}</datalist>
+    <datalist id="dl-datasources">${opt(sourceFilenames)}</datalist>
   `;
   return html;
 }
 
 /* ---------- Sous-section : parcours professionnel ---------- */
-
-function institutionInfoSummary(item, prefix){
-  prefix = prefix || 'institution';
-  const parts = [item[prefix+'City'], item[prefix+'Country']].filter(Boolean);
-  return parts.length ? ` — ${esc(parts.join(', '))}` : '';
-}
-
-/* ---------- Popup : informations d'institution (adresse + remarques) ---------- */
-
-let addressModalState = null; // { kind:'traj'|'edu', index } ou null
-
-function openInstitutionModal(kind, index){
-  addressModalState = { kind, index };
-  renderInstitutionModalInPlace();
-}
-function closeInstitutionModal(){
-  addressModalState = null;
-  renderInstitutionModalInPlace();
-  // Les champs ont pu changer pendant que la popup était ouverte : on
-  // rafraîchit la liste (pour mettre à jour le résumé sur le bouton) et on
-  // programme une sauvegarde.
-  renderTrajListInPlace();
-  renderEduListInPlace();
-  scheduleAutoSave();
-}
-function renderInstitutionModalInPlace(){
-  const el = document.getElementById('institution-modal-root');
-  if(el) el.innerHTML = renderInstitutionModal();
-}
-function renderInstitutionModal(){
-  if(!addressModalState) return '';
-  const { kind, index } = addressModalState;
-  const isEdu = kind === 'edu';
-  const item = isEdu ? state.form.educations[index] : state.form.trajectories[index];
-  if(!item) return '';
-  const prefix = isEdu ? 'school' : 'institution';
-  const setFn = isEdu ? 'eduSet' : 'trajSet';
-  const name = item[isEdu ? 'school' : 'institution'] || '(institution non nommée)';
-  return `
-  <div class="modal-overlay" onclick="if(event.target===this) closeInstitutionModal()">
-    <div class="modal-panel">
-      <div class="modal-header">
-        <h3>${esc(name)}</h3>
-        <button class="ghost" onclick="closeInstitutionModal()">✕</button>
-      </div>
-      <div class="grid grid-2">
-        <div class="field"><label>Ville</label><input type="text" list="dl-municipalities" value="${esc(item[prefix+'City'])}" oninput="${setFn}(${index},'${prefix}City',this.value)"></div>
-        <div class="field"><label>Pays</label><input type="text" list="dl-countries" value="${esc(item[prefix+'Country'])}" oninput="${setFn}(${index},'${prefix}Country',this.value)"></div>
-        <div class="field"><label>Rue</label><input type="text" value="${esc(item[prefix+'Street'])}" oninput="${setFn}(${index},'${prefix}Street',this.value)"></div>
-        <div class="field"><label>N°</label><input type="text" value="${esc(item[prefix+'StreetNumber'])}" oninput="${setFn}(${index},'${prefix}StreetNumber',this.value)"></div>
-      </div>
-      <div class="field" style="margin-top:10px"><label>Remarques sur l'institution</label><textarea oninput="${setFn}(${index},'${prefix}Remarks',this.value)">${esc(item[prefix+'Remarks'])}</textarea></div>
-      <div class="form-footer" style="margin-top:16px;border-top:none;padding-top:0">
-        <span></span>
-        <button class="primary" onclick="closeInstitutionModal()">Fermer</button>
-      </div>
-    </div>
-  </div>`;
-}
 
 function renderTrajList(){
   return state.form.trajectories.map((t,i) => `
@@ -800,9 +1177,7 @@ function renderTrajList(){
         <div class="field"><label>Poste</label><input type="text" list="dl-positions" value="${esc(t.position)}" oninput="trajSet(${i},'position',this.value)"></div>
         <div class="field"><label>Institution</label><input type="text" list="dl-institutions" value="${esc(t.institution)}" oninput="trajSet(${i},'institution',this.value)"></div>
       </div>
-      <div style="margin-top:8px">
-        <button class="small" onclick="openInstitutionModal('traj',${i})">📍 Infos institution${institutionInfoSummary(t)}</button>
-      </div>
+      <p class="hint" style="margin-top:2px">Adresse et type d'institution : à gérer sur la page « Institutions ».</p>
       <div class="grid grid-2" style="margin-top:10px">
         <div class="field"><label>Arène</label><input type="text" list="dl-arenas" value="${esc(t.arena)}" oninput="trajSet(${i},'arena',this.value)"></div>
         <div class="field"><label>Lieu de travail</label><input type="text" value="${esc(t.workPlace)}" oninput="trajSet(${i},'workPlace',this.value)"></div>
@@ -821,6 +1196,44 @@ function renderTrajList(){
     </div>
   `).join('');
 }
+
+// Les 3 natures possibles (Début / Fin / En cours) et leur code interne —
+// utilisé dans les deux sens ci-dessous.
+const NATURE_DEFAULT_LABELS = { '1':'Début', '2':'Fin', '3':'En cours' };
+const NATURE_LABEL_TO_CODE = { 'début':'1', 'debut':'1', 'fin':'2', 'en cours':'3' };
+
+// Quand on tape/choisit un événement dans le champ Événement, sa nature est
+// déduite automatiquement, dans deux cas :
+//  1) le texte tapé est justement l'un des 3 libellés fixes (Début/Fin/En
+//     cours) — reconnu immédiatement, sans dépendre de données déjà
+//     enregistrées ;
+//  2) le texte correspond à un événement précis déjà utilisé ailleurs dans
+//     la base (ex. « Nomination »), dont la nature est alors reprise depuis
+//     l'historique.
+function eventNameChanged(i, j, value){
+  eventSet(i, j, 'event', value);
+  const byFixedLabel = NATURE_LABEL_TO_CODE[(value || '').trim().toLowerCase()];
+  const natures = (state.referentials && state.referentials.eventNatures) || {};
+  const known = byFixedLabel || natures[value];
+  if(known){
+    state.form.trajectories[i].events[j].nature = known;
+    renderEventRowsInPlace(i);
+  }
+}
+
+// À l'inverse, choisir directement une Nature (Début / En cours / Fin) —
+// par exemple sur un tout nouvel événement — pré-remplit le champ
+// Événement avec ce même libellé par défaut, sans écraser un texte déjà
+// saisi (ex. « Nomination ») : juste un point de départ à préciser si besoin.
+function eventNatureChanged(i, j, value){
+  eventSet(i, j, 'nature', value);
+  const ev = state.form.trajectories[i].events[j];
+  if(!(ev.event || '').trim() && NATURE_DEFAULT_LABELS[value]){
+    ev.event = NATURE_DEFAULT_LABELS[value];
+    renderEventRowsInPlace(i);
+  }
+}
+
 function renderEventRows(i, events){
   return events.map((e,j) => `
     <div class="event-row">
@@ -828,16 +1241,16 @@ function renderEventRows(i, events){
       <div class="field field-month"><label>Mois</label><input type="number" min="1" max="12" value="${esc(e.month)}" oninput="eventSet(${i},${j},'month',this.value)"></div>
       <div class="field field-year"><label>Année</label><input type="number" value="${esc(e.year)}" oninput="eventSet(${i},${j},'year',this.value)"></div>
       <div class="field field-nature"><label>Nature</label>
-        <select onchange="eventSet(${i},${j},'nature',this.value)">
+        <select onchange="eventNatureChanged(${i},${j},this.value)">
           <option value="1" ${e.nature==='1'?'selected':''}>Début</option>
           <option value="2" ${e.nature==='2'?'selected':''}>Fin</option>
           <option value="3" ${e.nature==='3'?'selected':''}>En cours</option>
         </select>
       </div>
-      <div class="field field-event"><label>Événement</label><input type="text" list="dl-events" value="${esc(e.event)}" oninput="eventSet(${i},${j},'event',this.value)"></div>
+      <div class="field field-event"><label>Événement</label><input type="text" list="dl-events" value="${esc(e.event)}" oninput="eventNameChanged(${i},${j},this.value)"></div>
       ${events.length>1 ? `<button class="small ghost" onclick="removeEvent(${i},${j})" title="Retirer cet événement">✕</button>` : ''}
       <div class="field field-event-src">
-        <label>Source</label>
+        <label>Fichier source</label>
         <input type="text" class="field-source-mini" list="dl-datasources" value="${esc(e.dataSource)}"
           onfocus="dsFocus(this)" onblur="dsBlur(this)"
           oninput="eventSet(${i},${j},'dataSource',this.value); this.dataset.touched='1';">
@@ -871,12 +1284,10 @@ function renderEduList(){
         <div class="field"><label>Année de début</label><input type="number" value="${esc(e.startYear)}" oninput="eduSet(${i},'startYear',this.value)"></div>
         <div class="field"><label>Année de fin</label><input type="number" value="${esc(e.endYear)}" oninput="eduSet(${i},'endYear',this.value)"></div>
       </div>
-      <div style="margin-top:8px">
-        <button class="small" onclick="openInstitutionModal('edu',${i})">📍 Infos établissement${institutionInfoSummary(e,'school')}</button>
-      </div>
+      <p class="hint" style="margin-top:2px">Adresse et type d'établissement : à gérer sur la page « Institutions ».</p>
       <div class="field" style="margin-top:10px"><label>Remarques (ex. promotion)</label><input type="text" value="${esc(e.remarks)}" oninput="eduSet(${i},'remarks',this.value)"></div>
       <div class="checkbox-row"><input type="checkbox" id="initial-${i}" ${e.initial?'checked':''} onchange="eduSet(${i},'initial',this.checked)"><label for="initial-${i}">Formation initiale</label></div>
-      <div class="field" style="margin-top:10px"><label>Source de la saisie</label><input type="text" list="dl-datasources" value="${esc(e.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)" oninput="eduSet(${i},'dataSource',this.value); this.dataset.touched='1';"></div>
+      <div class="field" style="margin-top:10px"><label>Fichier source</label><input type="text" list="dl-datasources" value="${esc(e.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)" oninput="eduSet(${i},'dataSource',this.value); this.dataset.touched='1';"></div>
     </div>
   `).join('');
 }
@@ -897,7 +1308,7 @@ function renderDistList(){
         <div class="field"><label>Description</label><input type="text" value="${esc(d.description)}" oninput="distSet(${i},'description',this.value)"></div>
       </div>
       <div class="field" style="margin-top:10px"><label>Remarques</label><input type="text" value="${esc(d.remarks)}" oninput="distSet(${i},'remarks',this.value)"></div>
-      <div class="field" style="margin-top:10px"><label>Source de la saisie</label><input type="text" list="dl-datasources" value="${esc(d.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)" oninput="distSet(${i},'dataSource',this.value); this.dataset.touched='1';"></div>
+      <div class="field" style="margin-top:10px"><label>Fichier source</label><input type="text" list="dl-datasources" value="${esc(d.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)" oninput="distSet(${i},'dataSource',this.value); this.dataset.touched='1';"></div>
     </div>
   `).join('');
 }
@@ -919,7 +1330,7 @@ function renderRelList(){
         <div class="field"><label>Lien de parenté</label><input type="text" list="dl-relativetypes" value="${esc(r.relationType)}" oninput="relSet(${i},'relationType',this.value)"></div>
         <div class="field"><label>Fonction du proche (optionnel)</label><input type="text" list="dl-professions" value="${esc(r.profession)}" oninput="relSet(${i},'profession',this.value)"></div>
       </div>
-      <div class="field" style="margin-top:10px"><label>Source de la saisie</label><input type="text" list="dl-datasources" value="${esc(r.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)" oninput="relSet(${i},'dataSource',this.value); this.dataset.touched='1';"></div>
+      <div class="field" style="margin-top:10px"><label>Fichier source</label><input type="text" list="dl-datasources" value="${esc(r.dataSource)}" onfocus="dsFocus(this)" onblur="dsBlur(this)" oninput="relSet(${i},'dataSource',this.value); this.dataset.touched='1';"></div>
     </div>
   `).join('');
 }

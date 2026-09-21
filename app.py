@@ -87,7 +87,7 @@ def get_conn():
         g.conn = conn
     return conn
  
- 
+
 @app.teardown_appcontext
 def close_conns(exc):
     conn = g.pop("conn", None)
@@ -360,7 +360,7 @@ def schema_statements(cfg):
               PRIMARY KEY (IND_PK1, IND_PK2, RET_PK)
             )
         """)
-
+ 
     # Nationalité(s) : une personne peut avoir plusieurs nationalités (table
     # de liaison IND_PK/COU_PK), avec éventuellement l'année d'obtention et
     # de perte — voir schema_lesbiographies.json (T_nationality).
@@ -651,8 +651,8 @@ def ensure_column(conn, table, column, decltype):
     cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
     if cols and column not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decltype}")
-
-
+ 
+ 
 def migrate_add_data_source_columns(conn):
     """Fusion des trois bases sources en une seule interface : chaque section
     (identité, étape de carrière, formation, distinction, proche, document
@@ -665,8 +665,8 @@ def migrate_add_data_source_columns(conn):
     ensure_column(conn, "T_Distinctions", "DST_dataSource", "TEXT")
     ensure_column(conn, "T_Relatives", "REL_dataSource", "TEXT")
     ensure_column(conn, "T_source", "SOU_sourceTypeLabel", "TEXT")
-
-
+ 
+ 
 def init_db():
     """Initialise/migre le fichier .db unique, sous un vrai verrou d'écriture
     SQLite (BEGIN IMMEDIATE). Si une autre machine est en train de migrer ce
@@ -785,6 +785,14 @@ def upsert_by_name(conn, table, pk_field, name_field, name, user, extra_cols=Non
  
 def upsert_position(conn, name, user, create_if_missing=True):
     return upsert_by_name(conn, "T_position", "POS_PK", "POS_name", name, user, create_if_missing=create_if_missing)
+ 
+ 
+def upsert_institution_type(conn, name, user, create_if_missing=True):
+    """Type d'institution (Entreprise, École/Université...) : 3 valeurs de
+    départ, mais librement complétable comme les autres référentiels — on
+    peut taper un nouveau type directement dans le champ."""
+    return upsert_by_name(conn, "T_institutionType", "IST_PK", "IST_description", name, user,
+                           create_if_missing=create_if_missing)
  
  
 def upsert_arena(conn, name, user, create_if_missing=True):
@@ -918,6 +926,7 @@ def get_institution_place(conn, ins_pk):
                ip.ISP_street as street, ip.ISP_streetNumber as streetNumber
         FROM T_institutionPlace ip JOIN T_municipality mu ON mu.MUN_PK = ip.MUN_PK
         WHERE ip.INS_PK=?
+        ORDER BY ip.rowid DESC LIMIT 1
     """, (ins_pk,))
     return row or {"city": "", "country": "", "street": "", "streetNumber": ""}
  
@@ -993,7 +1002,6 @@ def get_individual_bundle(conn, cfg, pk):
         pos = q1(conn, "SELECT * FROM T_position WHERE POS_PK=?", (ref["POS_PK"],))
         ins = q1(conn, "SELECT * FROM T_institution WHERE INS_PK=?", (ref["INS_PK"],))
         are = q1(conn, "SELECT * FROM T_arena WHERE ARE_PK=?", (ref["ARE_PK"],))
-        place = get_institution_place(conn, ref["INS_PK"])
         events = []
         for r in rows:
             info = event_info(r)
@@ -1005,11 +1013,6 @@ def get_individual_bundle(conn, cfg, pk):
         trajectories.append({
             "position": pos["POS_name"] if pos else "",
             "institution": ins["INS_completeName"] if ins else "",
-            "institutionType": ins["IST_PK"] if ins else 1,
-            "institutionCity": place["city"] or "", "institutionCountry": place["country"] or "",
-            "institutionStreet": place["street"] or "",
-            "institutionStreetNumber": place["streetNumber"] or "",
-            "institutionRemarks": (ins.get("INS_remarks") or "") if ins else "",
             "arena": are["ARE_completeName"] if are else "Fonction Exécutive",
             "positionDetails": ref.get("TRA_positionDetails") or "",
             "remarks": ref.get("TRA_remarks") or "",
@@ -1026,12 +1029,8 @@ def get_individual_bundle(conn, cfg, pk):
         dip = q1(conn, "SELECT * FROM T_diploma WHERE DIP_PK=?", (e.get("DIP_PK"),)) if e.get("DIP_PK") else None
         dis = q1(conn, "SELECT * FROM T_discipline WHERE DIS_PK=?", (e.get("DIS_PK"),)) if e.get("DIS_PK") else None
         gra = q1(conn, "SELECT * FROM T_grade WHERE GRA_PK=?", (e.get("GRA_PK"),)) if e.get("GRA_PK") else None
-        place = get_institution_place(conn, e.get("INS_PK"))
         educations.append({
             "school": ins["INS_completeName"] if ins else "",
-            "schoolCity": place["city"] or "", "schoolCountry": place["country"] or "",
-            "schoolStreet": place["street"] or "", "schoolStreetNumber": place["streetNumber"] or "",
-            "schoolRemarks": (ins.get("INS_remarks") or "") if ins else "",
             "diploma": dip["DIP_degree"] if dip else "",
             "discipline": dis["DIS_description"] if dis else "",
             "grade": gra["GRA_description"] if gra else "",
@@ -1059,14 +1058,14 @@ def get_individual_bundle(conn, cfg, pk):
             relatives.append({
                 "pk": rel_ind["IND_PK"] if rel_ind else None,
                 "firstname": rel_ind.get("IND_usualFirstname") if rel_ind else "",
-                "lastname": rel_ind.get("IND_birthName") if rel_ind else "",
+                "lastname": rel_ind.get("IND_commonName") if rel_ind else "",
                 "relationType": rel_type.get("RET_Description") if rel_type else "",
                 "profession": rel_prof.get("PRO_description") if rel_prof else "",
                 "dataSource": r.get("REL_dataSource") or "",
             })
         f["relatives"] = relatives
  
-
+ 
     nat_rows = []
     if conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='T_nationality'"
@@ -1082,7 +1081,7 @@ def get_individual_bundle(conn, cfg, pk):
             "dataSource": n.get("NAT_dataSource") or "",
         })
     f["nationalities"] = nationalities
-
+ 
     return f
  
  
@@ -1153,8 +1152,7 @@ def save_individual(conn, cfg, user, editing_pk, form, silent=False):
         if not filename:
             continue
         auto_name = (s.get("name") or "").strip() or (
-            f"{form.get('usualFirstname', '')} {form.get('birthName', '')}"
-            f"{(' ' + str(form.get('birthYear'))) if form.get('birthYear') else ''}"
+            f"{form.get('usualFirstname', '')} {form.get('commonName', '')}"
         ).strip()
         cur = conn.execute(
             "INSERT INTO T_source (SOU_name, SOU_remarks, SOU_Filename, SOU_sourceTypeLabel, provenance) "
@@ -1163,7 +1161,7 @@ def save_individual(conn, cfg, user, editing_pk, form, silent=False):
         )
         sou_pk = cur.lastrowid
         conn.execute("INSERT INTO T_sourceIndividual (IND_PK, SOU_PK) VALUES (?,?)", (ind_pk, sou_pk))
-
+ 
     # --- Nationalité(s) : plusieurs possibles, on retire l'ancien et on reconstruit ---
     conn.execute("DELETE FROM T_nationality WHERE IND_PK=?", (ind_pk,))
     for n in form.get("nationalities") or []:
@@ -1187,18 +1185,15 @@ def save_individual(conn, cfg, user, editing_pk, form, silent=False):
         if not t.get("position") and not t.get("institution"):
             continue
         pos_pk = upsert_position(conn, t.get("position"), user, create_if_missing=cim)
-        ins_pk = upsert_institution(conn, t.get("institution"), user, t.get("institutionType") or 1,
-                                     remarks=t.get("institutionRemarks"), create_if_missing=cim)
+        # L'institution se choisit désormais dans la liste (gérée sur sa
+        # propre page « Institutions ») : on se contente ici de retrouver ou
+        # créer l'entrée par son nom, sans toucher à son type ni son adresse.
+        ins_pk = upsert_institution(conn, t.get("institution"), user, create_if_missing=cim)
         are_pk = upsert_arena(conn, t.get("arena") or "Fonction Exécutive", user, create_if_missing=cim)
         if pos_pk is None or ins_pk is None or are_pk is None:
             continue  # référentiel pas encore stabilisé (auto-save) : on ne persiste pas cette étape pour l'instant
         principal = 1 if t.get("principal") else 2
         events = t.get("events") or []
-        years = [to_int(e.get("year")) for e in events if to_int(e.get("year"))]
-        upsert_institution_place(conn, cfg, ins_pk, t.get("institutionCity"), t.get("institutionCountry"),
-                                  t.get("institutionStreet"), t.get("institutionStreetNumber"),
-                                  min(years) if years else None, max(years) if years else None, user,
-                                  create_if_missing=cim)
  
         for evidx, ev in enumerate(events):
             has_info = ev.get("day") or ev.get("month") or ev.get("year") or (ev.get("event") or "").strip()
@@ -1224,11 +1219,8 @@ def save_individual(conn, cfg, user, editing_pk, form, silent=False):
     for e in form.get("educations") or []:
         if not e.get("school") and not e.get("diploma"):
             continue
-        school_ins_pk = upsert_institution(conn, e.get("school"), user, 2, remarks=e.get("schoolRemarks"),
-                                            create_if_missing=cim) if e.get("school") else None
-        upsert_institution_place(conn, cfg, school_ins_pk, e.get("schoolCity"), e.get("schoolCountry"),
-                                  e.get("schoolStreet"), e.get("schoolStreetNumber"),
-                                  e.get("startYear"), e.get("endYear"), user, create_if_missing=cim)
+        school_ins_pk = upsert_institution(conn, e.get("school"), user, create_if_missing=cim) \
+            if e.get("school") else None
         conn.execute(
             "INSERT INTO T_education (DIS_PK, INS_PK, DIP_PK, GRA_PK, IND_PK, EDU_startYear, EDU_endYear, "
             "EDU_initial, EDU_remarks, EDU_dataSource, provenance) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -1377,27 +1369,27 @@ def _rel_sig(r):
  
 def _rel_label(r):
     return f"{r.get('relationType', '')} : {r.get('firstname', '')} {r.get('lastname', '')}"
-
-
+ 
+ 
 def _src_sig(s):
     return f"{(s.get('sourceType') or '').strip().lower()}|{(s.get('filename') or '').strip().lower()}"
-
-
+ 
+ 
 def _src_label(s):
     return f"{s.get('sourceType', '')} — {s.get('filename', '')}"
-
-
+ 
+ 
 def _nat_sig(n):
     return (n.get('country') or '').strip().lower()
-
-
+ 
+ 
 def _nat_label(n):
     years = ''
     if n.get('obtentionYear') or n.get('lossYear'):
         years = f" ({n.get('obtentionYear','') or '?'}–{n.get('lossYear','') or ''})"
     return f"{n.get('country', '')}{years}"
-
-
+ 
+ 
 def list_diff(old_list, new_list, sig_fn, label_fn):
     old_map = {sig_fn(x): x for x in (old_list or [])}
     new_map = {sig_fn(x): x for x in (new_list or [])}
@@ -1578,6 +1570,15 @@ def api_referentials():
         except (TypeError, ValueError):
             pass
  
+    # Nature (Début / Fin / En cours) associée à chaque libellé d'événement
+    # déjà utilisé, pour pré-remplir automatiquement le champ Nature quand on
+    # choisit un événement existant dans le Parcours professionnel.
+    event_nature_rows = conn.execute(
+        "SELECT EVE_description, EVT_PK FROM T_event "
+        "WHERE EVE_description IS NOT NULL AND EVE_description != '' GROUP BY EVE_description"
+    ).fetchall()
+    event_natures = {r[0]: str(r[1]) for r in event_nature_rows if r[1] is not None}
+ 
     return jsonify({
         "positions": col("T_position", "POS_name"),
         "institutions": col("T_institution", "INS_completeName"),
@@ -1592,6 +1593,8 @@ def api_referentials():
         "grades": col("T_grade", "GRA_description"),
         "relativeTypes": col("T_RelativeType", "RET_Description"),
         "events": col("T_event", "EVE_description"),
+        "eventNatures": event_natures,
+        "institutionTypes": col("T_institutionType", "IST_description"),
         "dataSources": sorted(data_sources, key=lambda s: s.lower()),
     })
  
@@ -1603,6 +1606,122 @@ def api_check_dup():
     matches = find_name_matches(conn, request.args.get("commonName", ""),
                                  request.args.get("usualFirstname", ""), exclude)
     return jsonify(matches)
+ 
+ 
+# ============================================================
+# Institutions : page dédiée (liste/recherche + fiche détaillée)
+# ============================================================
+ 
+@app.route("/api/institutions")
+def api_institutions():
+    conn = get_conn()
+    q_text = (request.args.get("q") or "").strip()
+    sql = "SELECT INS_PK as pk, INS_completeName as name, IST_PK as typePK FROM T_institution"
+    params = ()
+    if q_text:
+        sql += " WHERE lower(INS_completeName) LIKE ?"
+        params = (f"%{q_text.lower()}%",)
+    sql += " ORDER BY INS_completeName"
+    rows = q(conn, sql, params)
+    types = {r["IST_PK"]: r["IST_description"] for r in q(conn, "SELECT * FROM T_institutionType")}
+    for r in rows:
+        r["typeName"] = types.get(r["typePK"], "")
+        place = get_institution_place(conn, r["pk"])
+        r["city"] = place["city"]
+        r["country"] = place["country"]
+    return jsonify(rows)
+ 
+ 
+@app.route("/api/institution/<int:pk>")
+def api_get_institution(pk):
+    conn = get_conn()
+    ins = q1(conn, "SELECT * FROM T_institution WHERE INS_PK=?", (pk,))
+    if not ins:
+        abort(404, description="Institution introuvable")
+    place = get_institution_place(conn, pk)
+    ist = q1(conn, "SELECT IST_description FROM T_institutionType WHERE IST_PK=?", (ins.get("IST_PK"),))
+    return jsonify({
+        "pk": pk,
+        "name": ins.get("INS_completeName") or "",
+        "type": ist["IST_description"] if ist else "",
+        "remarks": ins.get("INS_remarks") or "",
+        "city": place["city"], "country": place["country"],
+        "street": place["street"], "streetNumber": place["streetNumber"],
+    })
+ 
+ 
+@app.route("/api/institution", methods=["POST"])
+def api_save_institution():
+    body = request.get_json(force=True)
+    user = (body.get("user") or "").strip() or "Anonyme"
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"ok": False, "error": "Le nom de l'institution est obligatoire."}), 400
+    pk = body.get("pk")
+    conn = get_conn()
+    with LOCK:
+        try:
+            # Type d'institution : texte libre (comme poste, arène...), avec
+            # les 3 valeurs de départ proposées mais complétable à la volée.
+            type_pk = upsert_institution_type(conn, body.get("type") or "Entreprise", user,
+                                               create_if_missing=True)
+            existing = q1(conn, "SELECT INS_PK FROM T_institution WHERE INS_PK=?", (pk,)) if pk else None
+            if existing:
+                conn.execute(
+                    "UPDATE T_institution SET INS_completeName=?, IST_PK=?, INS_remarks=? WHERE INS_PK=?",
+                    (name, type_pk, nz(body.get("remarks")), pk),
+                )
+                ins_pk = pk
+            else:
+                dup = q1(conn, "SELECT INS_PK FROM T_institution WHERE lower(INS_completeName)=lower(?)", (name,))
+                if dup:
+                    return jsonify({"ok": False, "error": "Une institution porte déjà ce nom.",
+                                     "duplicatePK": dup["INS_PK"]}), 409
+                cur = conn.execute(
+                    "INSERT INTO T_institution (INS_completeName, IST_PK, INS_remarks, provenance) "
+                    "VALUES (?,?,?,?)",
+                    (name, type_pk, nz(body.get("remarks")), provenance_json(user)),
+                )
+                ins_pk = cur.lastrowid
+            # Une institution n'a qu'une seule adresse "courante" gérée depuis
+            # cette page : on l'efface et on la reconstruit plutôt que de
+            # l'ajouter à côté de l'ancienne (T_institutionPlace est indexée
+            # par ville, donc changer de ville créerait sinon une 2e adresse
+            # au lieu de remplacer la 1re).
+            conn.execute("DELETE FROM T_institutionPlace WHERE INS_PK=?", (ins_pk,))
+            upsert_institution_place(conn, CFG, ins_pk, body.get("city"), body.get("country"),
+                                      body.get("street"), body.get("streetNumber"), None, None, user,
+                                      create_if_missing=True)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    return jsonify({"ok": True, "pk": ins_pk})
+ 
+ 
+# ============================================================
+# Sources : page dédiée (recherche à travers toutes les fiches)
+# ============================================================
+ 
+@app.route("/api/sources")
+def api_sources():
+    conn = get_conn()
+    q_text = (request.args.get("q") or "").strip()
+    sql = """
+        SELECT s.SOU_PK as pk, s.SOU_Filename as filename, s.SOU_name as name, s.SOU_remarks as remarks,
+               ih.IND_PK as individualPK, ih.IND_usualFirstname as individualFirstname,
+               ih.IND_birthName as individualBirthName, ih.IND_commonName as individualCommonName
+        FROM T_source s
+        JOIN T_sourceIndividual si ON si.SOU_PK = s.SOU_PK
+        JOIN T_individualHuman ih ON ih.IND_PK = si.IND_PK
+    """
+    params = ()
+    if q_text:
+        sql += " WHERE lower(s.SOU_Filename) LIKE ? OR lower(s.SOU_name) LIKE ?"
+        like = f"%{q_text.lower()}%"
+        params = (like, like)
+    sql += " ORDER BY s.SOU_Filename"
+    return jsonify(q(conn, sql, params))
  
  
 @app.route("/api/individual", methods=["POST"])
@@ -1639,7 +1758,7 @@ def api_save_individual():
                 }), 409
             ind_pk, old_bundle, new_bundle = save_individual(conn, CFG, user, editing_pk, form, silent=silent)
             if not silent:
-                name = f"{new_bundle['usualFirstname']} {new_bundle['birthName']}".strip()
+                name = f"{new_bundle['usualFirstname']} {new_bundle['commonName']}".strip()
                 if old_bundle is None:
                     log_history(conn, ind_pk, user, "création", name, f"Création de la fiche « {name} »", [])
                 else:
@@ -1666,7 +1785,7 @@ def api_delete_individual(pk):
             if not bundle:
                 return jsonify({"ok": False, "error": "Introuvable"}), 404
             delete_individual(conn, CFG, pk)
-            name = f"{bundle['usualFirstname']} {bundle['birthName']}".strip()
+            name = f"{bundle['usualFirstname']} {bundle['commonName']}".strip()
             log_history(conn, pk, user, "suppression", name, f"Suppression de la fiche « {name} »", [])
             conn.commit()
         except Exception:
@@ -1697,3 +1816,4 @@ def api_history():
  
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
+ 
