@@ -32,10 +32,13 @@ import unicodedata
 from collections import Counter
 from datetime import date, datetime
 
-from flask import Flask, abort, g, jsonify, render_template, request
+from flask import Flask, Response, abort, g, jsonify, render_template, request
 
 from config import DATA_DIR
-
+try:
+    from config import SITE_PASS, SITE_USER
+except ImportError:
+    SITE_USER = SITE_PASS = ""
 # ============================================================
 # Configuration — interface unique (fusion des anciennes sources)
 # ============================================================
@@ -77,7 +80,17 @@ def db_path():
 LOCK = threading.Lock()
 
 app = Flask(__name__)
-
+@app.before_request
+def require_shared_login():
+    if not SITE_USER or not SITE_PASS:
+        return None
+    auth = request.authorization
+    if not auth or auth.username != SITE_USER or auth.password != SITE_PASS:
+        return Response(
+            "Authentification requise.", 401,
+            {"WWW-Authenticate": 'Basic realm="Diriva"'},
+        )
+    return None
 def get_conn():
     conn = g.get("conn")
     if conn is None:
