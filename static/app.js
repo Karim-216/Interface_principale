@@ -679,8 +679,8 @@ function renderSourcesPageListInPlace(){
     <div class="ind-row">
       <div class="ind-main">
         <div>
-          <div class="ind-name mono">${esc(s.filename)}</div>
-          <div class="ind-meta">${esc(s.name||'')} — fiche de <span class="hist-name-link" onclick="openIndividualFromSource(${s.individualPK})">${esc(s.individualFirstname)} ${esc(s.individualBirthName)}</span></div>
+          <div class="ind-name mono">${esc(s.name)}</div>
+          <div class="ind-meta">fiche de <span class="hist-name-link" onclick="openIndividualFromSource(${s.individualPK})">${esc(s.individualFirstname)} ${esc(s.individualBirthName)}</span></div>
         </div>
       </div>
     </div>

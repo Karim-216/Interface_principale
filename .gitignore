@@ -25,7 +25,8 @@ intp/
 *.sqlite
 *.sqlite3
 migrate_legacy_to_unified.py
-
+config.py
+inject.py
 # Packaging and build output
 build/
 dist/
