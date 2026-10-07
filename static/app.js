@@ -1106,7 +1106,7 @@ function renderSourcesList(){
   `).join('');
 }
 function renderSourcesListInPlace(){ document.getElementById('sources-list').innerHTML = renderSourcesList(); }
-function sourceSet(i,field,value){ state.form.sources[i][field]=value; if(field==='filename') refreshDataSourceDatalist(); scheduleAutoSave(); }
+function sourceSet(i,field,value){ state.form.sources[i][field]=value; if(field==='name') refreshDataSourceDatalist(); scheduleAutoSave(); }
 function addSource(){ state.form.sources.push(blankSource()); renderSourcesListInPlace(); refreshDataSourceDatalist(); scheduleAutoSave(); }
 function removeSource(i){ state.form.sources.splice(i,1); renderSourcesListInPlace(); refreshDataSourceDatalist(); scheduleAutoSave(); }
 
@@ -1117,7 +1117,7 @@ function removeSource(i){ state.form.sources.splice(i,1); renderSourcesListInPla
 function refreshDataSourceDatalist(){
   const el = document.getElementById('dl-datasources');
   if(!el || !state.form) return;
-  const names = state.form.sources.map(s => s.filename).filter(Boolean);
+  const names = state.form.sources.map(s => s.name).filter(Boolean);
   el.innerHTML = names.map(v => `<option value="${esc(v)}">`).join('');
 }
 
@@ -1144,7 +1144,7 @@ function datalists(){
   // noms de fichiers déjà saisis dans l'onglet Sources du CV de CETTE
   // fiche — pas une liste globale : on ne référence plus un simple libellé
   // ("LinkedIn") mais le document précis utilisé pour cette information.
-  const sourceFilenames = (state.form ? state.form.sources : []).map(s => s.filename).filter(Boolean);
+  const sourceFilenames = (state.form ? state.form.sources : []).map(s => s.name).filter(Boolean);
   let html = `
     <datalist id="dl-positions">${opt(r.positions)}</datalist>
     <datalist id="dl-institutions">${opt(r.institutions)}</datalist>
