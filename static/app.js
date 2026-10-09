@@ -4,7 +4,7 @@
    métier ici, seulement l'affichage et les appels réseau.
    ============================================================ */
 
-const APP_LABEL = 'Diriva';
+const APP_LABEL = 'Corporate';
 const DATA_SOURCE_TYPES = window.DATA_SOURCE_TYPES || [];
 
 // Champs de la section Identité qui ont chacun leur propre repère de source
@@ -152,7 +152,7 @@ function viewLogin(){
   return `
   <div class="center-screen">
     <div class="panel login-box">
-      <h1>Diriva</h1>
+      <h1>Corporate</h1>
       <p>Saisie manuelle des CV. Entrez votre nom pour continuer.</p>
       <div class="field">
         <label for="login-name">Votre nom</label>

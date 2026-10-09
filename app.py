@@ -737,11 +737,13 @@ def nz(v):
     return v
  
  
-def nz_lower(v):
-    if not v:
-        return None
-    v = v.strip()
-    return v.lower() if v else None
+def name_case(v):
+    """Nom/prénom : première lettre de chaque mot (espace ou tiret) en majuscule, le reste en minuscules."""
+    return re.sub(r"(^|[\s-])(\w)", lambda m: m.group(1) + m.group(2).upper(), (v or "").strip().lower())
+
+
+def nz_name(v):
+    return name_case(v) or None
  
  
 def to_int(v):
@@ -1117,11 +1119,11 @@ def save_individual(conn, cfg, user, editing_pk, form, silent=False):
         if form.get("profession") else None
  
     fields = {
-        "IND_birthName": (form.get("birthName") or "").strip().lower(),
-        "IND_marriedName": nz_lower(form.get("marriedName")),
-        "IND_commonName": nz_lower(form.get("commonName")),
-        "IND_usualFirstname": (form.get("usualFirstname") or "").strip().lower(),
-        "IND_OtherFirstname": nz_lower(form.get("otherFirstname")),
+        "IND_birthName": name_case(form.get("birthName")),
+        "IND_marriedName": nz_name(form.get("marriedName")),
+        "IND_commonName": nz_name(form.get("commonName")),
+        "IND_usualFirstname": name_case(form.get("usualFirstname")),
+        "IND_OtherFirstname": nz_name(form.get("otherFirstname")),
         "IND_birthSex": 1 if form.get("genre") == "Mme" else (0 if form.get("genre") == "M" else None),
         "IND_gender": form.get("genre") or None,
         "IND_FK_birthPlace": municipality_pk,
@@ -1271,16 +1273,16 @@ def save_individual(conn, cfg, user, editing_pk, form, silent=False):
                 if r.get("profession") else None
             if rel_pk:
                 conn.execute(
-                    "UPDATE T_individualHuman SET IND_birthName=?, IND_usualFirstname=?, PRO_PK=? WHERE IND_PK=?",
-                    ((r.get("lastname") or "").strip().lower(), (r.get("firstname") or "").strip().lower(),
-                     rel_prof_pk, rel_pk),
+                    "UPDATE T_individualHuman SET IND_birthName=?, IND_usualFirstname=?, IND_gender=?, IND_birthSex=?, PRO_PK=? WHERE IND_PK=?",
+                    (name_case(r.get("lastname")), name_case(r.get("firstname")),
+                     nz(r.get("gender")), nz(r.get("birthSex")), rel_prof_pk, rel_pk),
                 )
             else:
                 cur = conn.execute(
-                    "INSERT INTO T_individualHuman (IND_birthName, IND_usualFirstname, PRO_PK, provenance) "
-                    "VALUES (?,?,?,?)",
-                    ((r.get("lastname") or "").strip().lower(), (r.get("firstname") or "").strip().lower(),
-                     rel_prof_pk, prov),
+                    "INSERT INTO T_individualHuman (IND_birthName, IND_usualFirstname, IND_gender, IND_birthSex, PRO_PK, provenance) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (name_case(r.get("lastname")), name_case(r.get("firstname")),
+                     nz(r.get("gender")), nz(r.get("birthSex")), rel_prof_pk, prov),
                 )
                 rel_pk = cur.lastrowid
                 # Pas d'entrée app_individual_meta pour ces fiches "proches" : elles
